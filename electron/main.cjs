@@ -7,7 +7,53 @@ const {
   net,
 } = require("electron");
 const path = require("node:path");
-const { pathToFileURL } = require("node:url");
+const fs = require("node:fs");
+const { Readable } = require("node:stream");
+const MIME = { mp4: "video/mp4", m4v: "video/mp4", mov: "video/quicktime", webm: "video/webm", mkv: "video/x-matroska", ogv: "video/ogg", avi: "video/x-msvideo", jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp", bmp: "image/bmp", avif: "image/avif", svg: "image/svg+xml" };
+
+// Serve local files with real HTTP byte ranges so Chromium can fetch only the
+// moov/index and the needed clusters instead of streaming the whole file.
+async function serveFile(filePath, request) {
+  const stat = await fs.promises.stat(filePath);
+  const size = stat.size;
+  const ext = path.extname(filePath).slice(1).toLowerCase();
+  const headers = new Headers({
+    "Content-Type": MIME[ext] || "application/octet-stream",
+    "Accept-Ranges": "bytes",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
+    "Cross-Origin-Resource-Policy": "cross-origin",
+    "Cache-Control": "no-cache",
+  });
+  const range = request.headers.get("range");
+  let start = 0;
+  let end = size - 1;
+  let status = 200;
+  if (range) {
+    const m = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+    if (!m || (m[1] === "" && m[2] === "")) {
+      headers.set("Content-Range", `bytes */${size}`);
+      return new Response(null, { status: 416, headers });
+    }
+    if (m[1] === "") {
+      start = Math.max(0, size - Number(m[2]));
+    } else {
+      start = Number(m[1]);
+      if (m[2] !== "") end = Math.min(Number(m[2]), size - 1);
+    }
+    if (start >= size || start > end) {
+      headers.set("Content-Range", `bytes */${size}`);
+      return new Response(null, { status: 416, headers });
+    }
+    status = 206;
+    headers.set("Content-Range", `bytes ${start}-${end}/${size}`);
+  }
+  headers.set("Content-Length", String(end - start + 1));
+  if (request.method === "HEAD" || size === 0)
+    return new Response(null, { status, headers });
+  const stream = fs.createReadStream(filePath, { start, end, highWaterMark: 1024 * 1024 });
+  return new Response(Readable.toWeb(stream), { status, headers });
+}
 const {
   Library,
   IMAGE_EXTENSIONS,
@@ -86,20 +132,7 @@ app.whenReady().then(async () => {
     if (url.hostname !== "asset" || !item)
       return new Response("Not found", { status: 404 });
     try {
-      // Electron's file fetch handles byte ranges for seeking large local videos.
-      const fileResponse = await net.fetch(pathToFileURL(item.path).href, {
-        method: request.method,
-        headers: request.headers,
-      });
-      const headers = new Headers(fileResponse.headers);
-      // Allow thumbnail canvas capture from <video crossorigin="anonymous">.
-      headers.set("Access-Control-Allow-Origin", "*");
-      headers.set("Cross-Origin-Resource-Policy", "cross-origin");
-      return new Response(fileResponse.body, {
-        status: fileResponse.status,
-        statusText: fileResponse.statusText,
-        headers,
-      });
+      return await serveFile(item.path, request);
     } catch {
       return new Response("File unavailable", { status: 404 });
     }

@@ -1,5 +1,15 @@
 import type { Asset } from "./types";
 
+// Fully release a decoder/network stream instead of letting a detached
+// element keep downloading a large file in the background.
+function release(root: Element | null | undefined) {
+  root?.querySelectorAll("video").forEach((video) => {
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
+  });
+}
+
 export class Player {
   static readonly FADE_MS = 320;
   private layers: HTMLElement[];
@@ -34,7 +44,7 @@ export class Player {
     this.cancelLoad?.();
     const next = this.active === 0 ? 1 : 0;
     const layer = this.layers[next];
-    layer.querySelector("video")?.pause();
+    release(layer);
     layer.replaceChildren();
     layer.classList.remove("visible");
     const media = document.createElement(
@@ -99,12 +109,19 @@ export class Player {
       media.src = asset.url;
     }).catch((error: unknown) => {
       if (generation === this.generation) {
-        if (media instanceof HTMLVideoElement) media.pause();
+        release(layer);
         layer.replaceChildren();
       }
       throw error;
     });
-    if (generation !== this.generation) return false;
+    if (generation !== this.generation) {
+      // Superseded by a newer switch: drop this load right away.
+      if (!layer.classList.contains("visible")) {
+        release(layer);
+        layer.replaceChildren();
+      }
+      return false;
+    }
     const oldLayer = this.layers[this.active];
     oldLayer?.querySelector("video")?.pause();
     // Keep the incoming layer above so opacity crossfades are not covered.
@@ -117,6 +134,7 @@ export class Player {
 
     const clearOld = () => {
       if (generation !== this.generation) return;
+      release(oldLayer);
       oldLayer?.replaceChildren();
       if (oldLayer) oldLayer.style.zIndex = "";
       layer.style.zIndex = "";
@@ -133,7 +151,7 @@ export class Player {
     ++this.generation;
     this.cancelLoad?.();
     this.layers.forEach((layer) => {
-      layer.querySelector("video")?.pause();
+      release(layer);
       layer.replaceChildren();
       layer.classList.remove("visible");
     });

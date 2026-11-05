@@ -140,6 +140,7 @@ function renderLibrary() {
     <button class="asset-card ${item.id === selectedId ? "selected" : ""} ${item.missing ? "missing" : ""}" data-id="${item.id}" title="${escapeHTML(item.path)}" aria-pressed="${item.id === selectedId}">
       <span class="thumbnail">${thumbnailHTML(item)}<span class="type-badge">${item.type === "video" ? "视频" : "图片"}</span></span>
       <span class="card-info"><strong>${escapeHTML(item.name)}</strong><small>${item.missing ? "文件丢失 · 请重新导入" : `${item.name.split(".").pop()?.toUpperCase()} · ${formatSize(item.size)}`}</small></span>
+      <span class="card-delete" role="button" tabindex="-1" data-delete-id="${item.id}" title="从素材库移除（不删除原文件）" aria-label="移除素材">${icon("trash")}</span>
       <span class="card-key">${item.shortcut ? `<kbd>${escapeHTML(shortcutLabel(item.shortcut))}</kbd>` : `<span class="card-order">${String(index + 1).padStart(2, "0")}</span>`}</span>
     </button>`,
         )
@@ -148,9 +149,33 @@ function renderLibrary() {
   ensureVideoThumbnails();
 }
 
+// Thumbnail <video> elements are kept alive across re-renders so selecting an
+// item does not re-open and re-decode every library video.
+const thumbVideos = new Map<string, HTMLVideoElement>();
+const thumbQueue: (() => Promise<void>)[] = [];
+let thumbActive = 0;
+const THUMB_CONCURRENCY = 2;
+
+function pumpThumbs() {
+  while (thumbActive < THUMB_CONCURRENCY && thumbQueue.length) {
+    const job = thumbQueue.shift()!;
+    thumbActive++;
+    void job().finally(() => {
+      thumbActive--;
+      pumpThumbs();
+    });
+  }
+}
+
 function pruneThumbCache() {
   const alive = new Set(items.map((item) => item.id));
   for (const id of thumbCache.keys()) if (!alive.has(id)) thumbCache.delete(id);
+  for (const [id, video] of thumbVideos)
+    if (!alive.has(id)) {
+      video.removeAttribute("src");
+      video.load();
+      thumbVideos.delete(id);
+    }
 }
 
 function thumbnailHTML(item: Asset) {
@@ -160,47 +185,62 @@ function thumbnailHTML(item: Asset) {
   const cached = thumbCache.get(item.id);
   if (cached) return `<img src="${cached}" alt="" loading="lazy" />`;
   // Show a paused video frame directly; avoids canvas/CORS black frames.
-  return `<video class="thumb-video" data-thumb-id="${escapeHTML(item.id)}" src="${escapeHTML(item.url)}" muted playsinline preload="metadata" disablepictureinpicture></video>`;
+  return `<span class="thumb-slot" data-thumb-id="${escapeHTML(item.id)}" data-thumb-url="${escapeHTML(item.url)}"></span>`;
 }
 
 function ensureVideoThumbnails() {
   pruneThumbCache();
-  for (const video of document.querySelectorAll<HTMLVideoElement>(
-    "video.thumb-video",
-  )) {
-    const id = video.dataset.thumbId;
-    if (!id || video.dataset.ready === "1") continue;
-    video.dataset.ready = "1";
+  for (const slot of document.querySelectorAll<HTMLElement>("span.thumb-slot")) {
+    const id = slot.dataset.thumbId;
+    const url = slot.dataset.thumbUrl;
+    if (!id || !url) continue;
+    const existing = thumbVideos.get(id);
+    if (existing) {
+      slot.replaceWith(existing);
+      continue;
+    }
+    const video = document.createElement("video");
+    video.className = "thumb-video";
     video.muted = true;
-    const settle = async () => {
+    video.playsInline = true;
+    video.preload = "none";
+    video.disablePictureInPicture = true;
+    thumbVideos.set(id, video);
+    slot.replaceWith(video);
+    thumbQueue.push(async () => {
+      if (thumbVideos.get(id) !== video) return;
       try {
-        if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-          await new Promise<void>((resolve, reject) => {
-            video.addEventListener("loadeddata", () => resolve(), { once: true });
-            video.addEventListener("error", () => reject(), { once: true });
-          });
-        }
+        video.preload = "metadata";
+        video.src = url;
+        await new Promise<void>((resolve, reject) => {
+          const timer = window.setTimeout(() => reject(), 15000);
+          video.addEventListener("loadeddata", () => { clearTimeout(timer); resolve(); }, { once: true });
+          video.addEventListener("error", () => { clearTimeout(timer); reject(); }, { once: true });
+        });
         const target =
           Number.isFinite(video.duration) && video.duration > 0
             ? Math.min(0.2, video.duration * 0.03)
             : 0.05;
         if (Math.abs(video.currentTime - target) > 0.01) {
           video.currentTime = target;
-          await new Promise<void>((resolve) =>
-            video.addEventListener("seeked", () => resolve(), { once: true }),
-          );
+          await new Promise<void>((resolve) => {
+            const timer = window.setTimeout(resolve, 5000);
+            video.addEventListener("seeked", () => { clearTimeout(timer); resolve(); }, { once: true });
+          });
         }
         video.pause();
       } catch {
-        video.replaceWith(
-          Object.assign(document.createElement("span"), {
-            innerHTML: icon("play"),
-          }).firstElementChild!,
-        );
+        thumbVideos.delete(id);
+        video.removeAttribute("src");
+        video.load();
+        const fallback = Object.assign(document.createElement("span"), {
+          innerHTML: icon("play"),
+        }).firstElementChild;
+        if (fallback && video.isConnected) video.replaceWith(fallback);
       }
-    };
-    void settle();
+    });
   }
+  pumpThumbs();
 }
 
 function formatSize(bytes: number) {
@@ -567,6 +607,12 @@ document.addEventListener("keydown", (event) => {
 for (const id of ["import-top", "import-bottom", "import-empty"])
   $(`#${id}`).addEventListener("click", () => void chooseFiles());
 $("#library-list").addEventListener("click", (event) => {
+  const del = (event.target as HTMLElement).closest<HTMLElement>("[data-delete-id]");
+  if (del?.dataset.deleteId) {
+    event.stopPropagation();
+    void removeAsset(del.dataset.deleteId);
+    return;
+  }
   const card = (event.target as HTMLElement).closest<HTMLElement>("[data-id]");
   if (card?.dataset.id) void selectAsset(card.dataset.id);
 });
@@ -621,29 +667,51 @@ $("#loop").addEventListener(
   "change",
   () => void updateAsset({ loop: $<HTMLInputElement>("#loop").checked }),
 );
-$("#remove").addEventListener("click", async () => {
-  const item = selected();
+async function removeAsset(id: string) {
+  const item = items.find((entry) => entry.id === id);
   if (!item) return;
+  const wasSelected = item.id === selectedId;
+  const index = items.indexOf(item);
   try {
     if (api) items = await api.remove(item.id);
     else {
       URL.revokeObjectURL(item.url);
       items = items.filter((entry) => entry.id !== item.id);
     }
-    ++selecting;
-    selectedId = null;
-    player.clear();
-    $("#load-indicator").hidden = true;
-    $("#stage-empty").hidden = false;
-    renderLibrary();
+    if (wasSelected) {
+      ++selecting;
+      selectedId = null;
+      player.clear();
+      $("#load-indicator").hidden = true;
+      $("#stage-empty").hidden = false;
+    }
+    renderLibrary(); // prunes thumbnail cache + releases thumb <video>
     renderSettings();
     updateTransport();
-    const next = items.find((entry) => !entry.missing);
-    if (next) await selectAsset(next.id);
+    if (wasSelected) {
+      const next =
+        items.slice(index).find((entry) => !entry.missing) ??
+        [...items].reverse().find((entry) => !entry.missing);
+      if (next) await selectAsset(next.id);
+    }
     toast("已从素材库移除，原文件未删除");
   } catch (error) {
     failure(error);
   }
+}
+$("#remove").addEventListener("click", () => {
+  const item = selected();
+  if (item) void removeAsset(item.id);
+});
+document.addEventListener("keydown", (event) => {
+  if (event.code !== "Delete" && event.code !== "Backspace") return;
+  if (event.repeat || fullscreen || recording) return;
+  const target = event.target as HTMLElement;
+  if (target.closest("input, textarea, select, [contenteditable='true'], dialog[open]")) return;
+  const item = selected();
+  if (!item) return;
+  event.preventDefault();
+  void removeAsset(item.id);
 });
 $("#help").addEventListener("click", () =>
   $<HTMLDialogElement>("#help-dialog").showModal(),

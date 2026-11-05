@@ -1072,3 +1072,14 @@ dialog > .primary {
     transition: none !important;
   }
 }
+
+.asset-card { position: relative; }
+.card-delete {
+  position: absolute; top: 6px; right: 6px; z-index: 2;
+  display: grid; place-items: center; width: 26px; height: 26px;
+  border-radius: 7px; background: rgba(0,0,0,.6); color: #fff;
+  opacity: 0; transition: opacity .15s, background .15s; cursor: pointer;
+}
+.card-delete .icon { width: 14px; height: 14px; }
+.asset-card:hover .card-delete, .asset-card:focus-visible .card-delete { opacity: 1; }
+.card-delete:hover { background: #d9434b; }
