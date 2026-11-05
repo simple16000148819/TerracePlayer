@@ -148,7 +148,7 @@ async function main() {
       const video = document.querySelector(".media-layer.visible video");
       const rect = video.getBoundingClientRect();
       return (
-        getComputedStyle(video).objectFit === "cover" &&
+        getComputedStyle(video).objectFit === "contain" &&
         Math.abs(rect.width - innerWidth) < 1 &&
         Math.abs(rect.height - innerHeight) < 1
       );

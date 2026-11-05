@@ -1,6 +1,7 @@
 import type { Asset } from "./types";
 
 export class Player {
+  static readonly FADE_MS = 320;
   private layers: HTMLElement[];
   private active = -1;
   private generation = 0;
@@ -106,14 +107,25 @@ export class Player {
     if (generation !== this.generation) return false;
     const oldLayer = this.layers[this.active];
     oldLayer?.querySelector("video")?.pause();
+    // Keep the incoming layer above so opacity crossfades are not covered.
+    layer.style.zIndex = "2";
+    if (oldLayer) oldLayer.style.zIndex = "1";
     layer.classList.add("visible");
     oldLayer?.classList.remove("visible");
     this.active = next;
     if (media instanceof HTMLVideoElement) media.muted = this.muted;
-    // Retain the old layer until the browser paints the new one.
-    requestAnimationFrame(() => {
-      if (generation === this.generation) oldLayer?.replaceChildren();
-    });
+
+    const clearOld = () => {
+      if (generation !== this.generation) return;
+      oldLayer?.replaceChildren();
+      if (oldLayer) oldLayer.style.zIndex = "";
+      layer.style.zIndex = "";
+    };
+    const reduceMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+    if (!oldLayer || reduceMotion) clearOld();
+    else window.setTimeout(clearOld, Player.FADE_MS);
     return true;
   }
 

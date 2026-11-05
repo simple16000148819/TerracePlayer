@@ -91,6 +91,7 @@ let items: Asset[] = [];
 let selectedId: string | null = null;
 let filter = "all";
 let fullscreen = false;
+const thumbCache = new Map<string, string>();
 let selecting = 0;
 let importing = false;
 let recording = false;
@@ -120,6 +121,7 @@ function failure(error: unknown) {
 }
 
 function renderLibrary() {
+  pruneThumbCache();
   $("#asset-count").textContent = String(items.length);
   for (const type of ["all", "video", "image"])
     $(`#count-${type}`).textContent = String(
@@ -136,13 +138,69 @@ function renderLibrary() {
         .map(
           (item, index) => `
     <button class="asset-card ${item.id === selectedId ? "selected" : ""} ${item.missing ? "missing" : ""}" data-id="${item.id}" title="${escapeHTML(item.path)}" aria-pressed="${item.id === selectedId}">
-      <span class="thumbnail">${item.type === "image" && !item.missing ? `<img src="${escapeHTML(item.url)}" alt="" loading="lazy" />` : icon(item.type === "video" ? "play" : "image")}<span class="type-badge">${item.type === "video" ? "视频" : "图片"}</span></span>
+      <span class="thumbnail">${thumbnailHTML(item)}<span class="type-badge">${item.type === "video" ? "视频" : "图片"}</span></span>
       <span class="card-info"><strong>${escapeHTML(item.name)}</strong><small>${item.missing ? "文件丢失 · 请重新导入" : `${item.name.split(".").pop()?.toUpperCase()} · ${formatSize(item.size)}`}</small></span>
       <span class="card-key">${item.shortcut ? `<kbd>${escapeHTML(shortcutLabel(item.shortcut))}</kbd>` : `<span class="card-order">${String(index + 1).padStart(2, "0")}</span>`}</span>
     </button>`,
         )
         .join("")
     : `<div class="library-empty">${icon(items.length ? "search" : "film")}<strong>${items.length ? "没有匹配的素材" : "你的素材，从这里开始"}</strong><p>${items.length ? "试试其他关键词或素材类型" : "导入后，所有画面尽在掌握"}</p></div>`;
+  ensureVideoThumbnails();
+}
+
+function pruneThumbCache() {
+  const alive = new Set(items.map((item) => item.id));
+  for (const id of thumbCache.keys()) if (!alive.has(id)) thumbCache.delete(id);
+}
+
+function thumbnailHTML(item: Asset) {
+  if (item.missing) return icon(item.type === "video" ? "play" : "image");
+  if (item.type === "image")
+    return `<img src="${escapeHTML(item.url)}" alt="" loading="lazy" />`;
+  const cached = thumbCache.get(item.id);
+  if (cached) return `<img src="${cached}" alt="" loading="lazy" />`;
+  // Show a paused video frame directly; avoids canvas/CORS black frames.
+  return `<video class="thumb-video" data-thumb-id="${escapeHTML(item.id)}" src="${escapeHTML(item.url)}" muted playsinline preload="metadata" disablepictureinpicture></video>`;
+}
+
+function ensureVideoThumbnails() {
+  pruneThumbCache();
+  for (const video of document.querySelectorAll<HTMLVideoElement>(
+    "video.thumb-video",
+  )) {
+    const id = video.dataset.thumbId;
+    if (!id || video.dataset.ready === "1") continue;
+    video.dataset.ready = "1";
+    video.muted = true;
+    const settle = async () => {
+      try {
+        if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+          await new Promise<void>((resolve, reject) => {
+            video.addEventListener("loadeddata", () => resolve(), { once: true });
+            video.addEventListener("error", () => reject(), { once: true });
+          });
+        }
+        const target =
+          Number.isFinite(video.duration) && video.duration > 0
+            ? Math.min(0.2, video.duration * 0.03)
+            : 0.05;
+        if (Math.abs(video.currentTime - target) > 0.01) {
+          video.currentTime = target;
+          await new Promise<void>((resolve) =>
+            video.addEventListener("seeked", () => resolve(), { once: true }),
+          );
+        }
+        video.pause();
+      } catch {
+        video.replaceWith(
+          Object.assign(document.createElement("span"), {
+            innerHTML: icon("play"),
+          }).firstElementChild!,
+        );
+      }
+    };
+    void settle();
+  }
 }
 
 function formatSize(bytes: number) {
@@ -371,6 +429,7 @@ function syncFullscreen(enabled: boolean) {
   if (enabled) {
     (document.activeElement as HTMLElement)?.blur();
     $<HTMLDialogElement>("#help-dialog").close();
+    player.setFit($<HTMLSelectElement>("#fit").value as "contain" | "cover");
   }
 }
 
@@ -378,10 +437,8 @@ async function setFullscreen(enabled: boolean) {
   if (enabled && !selectedId) return;
   try {
     if (api) {
-      const next = await api.setFullscreen(enabled);
-      // Apply immediately so one F enters immersive mode even if the native
-      // fullscreen event reports isFullScreen() late on Windows.
-      syncFullscreen(Boolean(next));
+      await api.setFullscreen(enabled);
+      // Native fullscreen transitions finish asynchronously; events are authoritative.
     } else {
       if (enabled) await document.documentElement.requestFullscreen();
       else if (document.fullscreenElement) await document.exitFullscreen();

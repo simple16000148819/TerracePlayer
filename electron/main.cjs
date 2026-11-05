@@ -87,9 +87,18 @@ app.whenReady().then(async () => {
       return new Response("Not found", { status: 404 });
     try {
       // Electron's file fetch handles byte ranges for seeking large local videos.
-      return await net.fetch(pathToFileURL(item.path).href, {
+      const fileResponse = await net.fetch(pathToFileURL(item.path).href, {
         method: request.method,
         headers: request.headers,
+      });
+      const headers = new Headers(fileResponse.headers);
+      // Allow thumbnail canvas capture from <video crossorigin="anonymous">.
+      headers.set("Access-Control-Allow-Origin", "*");
+      headers.set("Cross-Origin-Resource-Policy", "cross-origin");
+      return new Response(fileResponse.body, {
+        status: fileResponse.status,
+        statusText: fileResponse.statusText,
+        headers,
       });
     } catch {
       return new Response("File unavailable", { status: 404 });
