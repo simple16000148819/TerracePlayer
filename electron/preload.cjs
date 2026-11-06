@@ -9,6 +9,13 @@ contextBridge.exposeInMainWorld("terrace", {
   pathForFile: (file) => webUtils.getPathForFile(file),
   setFullscreen: (enabled) => ipcRenderer.invoke("fullscreen:set", enabled),
   getFullscreen: () => ipcRenderer.invoke("fullscreen:get"),
+  remoteInfo: () => ipcRenderer.invoke("remote:info"),
+  reportPlayback: (state) => ipcRenderer.invoke("remote:playback", state),
+  onRemoteCommand: (callback) => {
+    const listener = (_event, cmd) => callback(cmd);
+    ipcRenderer.on("remote:command", listener);
+    return () => ipcRenderer.removeListener("remote:command", listener);
+  },
   onFullscreen: (callback) => {
     const listener = (_event, enabled) => callback(enabled);
     ipcRenderer.on("fullscreen:changed", listener);

@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Terrace 遥控器</title>
+<style>
+:root{color-scheme:dark;--bg:#101312;--card:#1a1f1d;--line:#2a312e;--acc:#9fe07a;--txt:#e9efe9;--sub:#8a958f}
+*{box-sizing:border-box}body{margin:0;font:15px/1.4 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--txt);padding:env(safe-area-inset-top) 12px 120px}
+header{display:flex;align-items:center;gap:8px;padding:14px 2px}header h1{font-size:18px;margin:0;flex:1}
+button{font:inherit;color:inherit;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 14px}
+button.acc{background:var(--acc);color:#101312;border:0;font-weight:600}
+.sub{color:var(--sub);font-size:13px}
+.players{display:grid;gap:8px;margin:8px 0}.player{display:flex;justify-content:space-between;align-items:center;text-align:left;width:100%}
+.player.on{border-color:var(--acc)}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.item{padding:0;overflow:hidden;text-align:left;position:relative}
+.item.on{outline:3px solid var(--acc)}
+.thumb{aspect-ratio:16/9;background:#0b0d0c center/cover no-repeat;display:flex;align-items:center;justify-content:center;font-size:28px;color:var(--sub)}
+.name{padding:6px 8px;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.key{position:absolute;top:6px;left:6px;background:#000a;border-radius:6px;padding:0 6px;font-size:12px}
+.miss{opacity:.4}
+.bar{position:fixed;left:0;right:0;bottom:0;display:flex;gap:10px;justify-content:center;padding:12px 12px calc(12px + env(safe-area-inset-bottom));background:#101312ee;border-top:1px solid var(--line)}
+.bar button{flex:1;max-width:120px;font-size:18px}
+input{font:inherit;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--txt);width:100%;letter-spacing:6px;text-align:center}
+#pinbox{display:none;gap:8px;margin:12px 0}
+</style>
+</head>
+<body>
+<header><h1 id="title">Terrace 遥控器</h1><button id="scan">扫描播放器</button></header>
+<div class="sub" id="status">连接中…</div>
+<div class="players" id="players"></div>
+<div id="pinbox"><input id="pin" inputmode="numeric" maxlength="4" placeholder="PIN" /><button class="acc" id="pinok">连接</button></div>
+<div class="grid" id="grid"></div>
+<div class="bar"><button id="prev">⏮</button><button class="acc" id="toggle">⏯</button><button id="next">⏭</button><button id="fs">⛶</button></div>
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (v) => String(v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const pins = JSON.parse(localStorage.getItem("terracePins") || "{}");
+let base = location.origin, pin = new URLSearchParams(location.search).get("pin") || pins[location.origin] || "";
+let state = { items: [], selectedId: null, playing: false }, es = null;
+const players = new Map();
+players.set(location.origin, { name: "本机", base: location.origin });
+
+function api(path) { return `${base}${path}${path.includes("?") ? "&" : "?"}pin=${encodeURIComponent(pin)}`; }
+function render() {
+  $("#grid").innerHTML = state.items.map((i) => `<button class="item ${i.id === state.selectedId ? "on" : ""} ${i.missing ? "miss" : ""}" data-id="${i.id}">
+    <div class="thumb" ${i.type === "image" && !i.missing ? `style="background-image:url('${api("/api/thumb/" + i.id)}')"` : ""}>${i.type === "video" ? "🎬" : ""}</div>
+    ${i.shortcut ? `<span class="key">${esc(i.shortcut.replace(/Key|Digit/g, ""))}</span>` : ""}
+    <div class="name">${esc(i.name)}</div></button>`).join("") || '<p class="sub">素材库为空，请在电脑上导入素材</p>';
+  $("#toggle").textContent = state.playing ? "⏸" : "▶";
+  $("#players").innerHTML = [...players.values()].map((p) => `<button class="player ${p.base === base ? "on" : ""}" data-base="${esc(p.base)}"><span>${esc(p.name)}</span><span class="sub">${esc(p.base.replace("http://", ""))}</span></button>`).join("");
+}
+function connect() {
+  es?.close();
+  $("#pinbox").style.display = "none";
+  $("#status").textContent = "连接中…";
+  fetch(api("/api/state")).then((r) => {
+    if (r.status === 401) throw new Error("pin");
+    return r.json();
+  }).then((s) => {
+    pins[base] = pin; localStorage.setItem("terracePins", JSON.stringify(pins));
+    state = s; $("#title").textContent = s.name; render();
+    es = new EventSource(api("/api/events"));
+    es.addEventListener("state", (e) => { state = JSON.parse(e.data); render(); });
+    es.addEventListener("playback", (e) => { Object.assign(state, JSON.parse(e.data)); render(); });
+    es.onopen = () => ($("#status").textContent = "已连接 · 点素材即可切换");
+    es.onerror = () => ($("#status").textContent = "连接中断，正在重连…");
+  }).catch((e) => {
+    $("#status").textContent = e.message === "pin" ? "请输入电脑上显示的 4 位 PIN" : "无法连接该播放器";
+    if (e.message === "pin") $("#pinbox").style.display = "flex";
+  });
+}
+function send(action, id) {
+  fetch(api("/api/command"), { method: "POST", headers: { "Content-Type": "text/plain" }, body: JSON.stringify({ action, id }) })
+    .then((r) => { if (!r.ok) $("#status").textContent = "操作失败"; });
+}
+async function hello(b, ms) {
+  const c = new AbortController(); const t = setTimeout(() => c.abort(), ms);
+  try { const r = await fetch(b + "/api/hello", { signal: c.signal }); const j = await r.json(); if (j.app === "terrace-player") { players.set(b, { name: j.name, base: b }); render(); } } catch {} finally { clearTimeout(t); }
+}
+async function scan() {
+  $("#scan").disabled = true; $("#scan").textContent = "扫描中…";
+  try { for (const p of await (await fetch(location.origin + "/api/peers")).json()) await hello(`http://${p.host}:${p.port}`, 1500); } catch {}
+  const host = location.hostname, port = location.port || "17890";
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+    const prefix = host.split(".").slice(0, 3).join(".");
+    const ips = Array.from({ length: 254 }, (_, i) => `${prefix}.${i + 1}`);
+    for (let i = 0; i < ips.length; i += 32) await Promise.all(ips.slice(i, i + 32).map((ip) => hello(`http://${ip}:${port}`, 900)));
+  }
+  $("#scan").disabled = false; $("#scan").textContent = "扫描播放器";
+}
+$("#grid").addEventListener("click", (e) => { const b = e.target.closest(".item"); if (b) { state.selectedId = b.dataset.id; render(); send("select", b.dataset.id); } });
+$("#players").addEventListener("click", (e) => { const b = e.target.closest(".player"); if (b) { base = b.dataset.base; pin = pins[base] || ""; render(); connect(); } });
+$("#pinok").onclick = () => { pin = $("#pin").value.trim(); connect(); };
+$("#prev").onclick = () => send("previous"); $("#next").onclick = () => send("next");
+$("#toggle").onclick = () => send("toggle"); $("#fs").onclick = () => send("fullscreen");
+$("#scan").onclick = scan;
+render(); connect(); scan();
+</script>
+</body>
+</html>

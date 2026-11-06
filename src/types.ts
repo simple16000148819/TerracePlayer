@@ -17,7 +17,24 @@ export interface ImportResult {
   rejected: string[];
 }
 
+export interface RemoteInfo {
+  name: string;
+  pin: string;
+  port: number;
+  ips: string[];
+  urls: string[];
+  qr: string;
+}
+
+export interface RemoteCommand {
+  action: "select" | "toggle" | "play" | "pause" | "next" | "previous";
+  id?: string;
+}
+
 export interface TerraceAPI {
+  remoteInfo(): Promise<RemoteInfo | null>;
+  reportPlayback(state: { selectedId: string | null; playing: boolean }): Promise<void>;
+  onRemoteCommand(callback: (cmd: RemoteCommand) => void): () => void;
   list(): Promise<Asset[]>;
   choose(): Promise<ImportResult | null>;
   importFiles(paths: string[]): Promise<ImportResult>;

@@ -59,6 +59,9 @@ const {
   IMAGE_EXTENSIONS,
   VIDEO_EXTENSIONS,
 } = require("./library.cjs");
+const { RemoteServer } = require("./remote.cjs");
+const QRCode = require("qrcode");
+let remote;
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -137,6 +140,29 @@ app.whenReady().then(async () => {
       return new Response("File unavailable", { status: 404 });
     }
   });
+  remote = new RemoteServer({
+    library,
+    onCommand: (cmd) => {
+      if (cmd.action === "fullscreen") return window?.setFullScreen(!window.isFullScreen());
+      window?.webContents.send("remote:command", cmd);
+    },
+  });
+  await remote.start().catch((error) => console.error("Remote server failed", error));
+  const notify = (fn) => async (...args) => {
+    const result = await fn(...args);
+    remote?.libraryChanged();
+    return result;
+  };
+  library.import = notify(library.import.bind(library));
+  library.update = notify(library.update.bind(library));
+  library.remove = notify(library.remove.bind(library));
+  handle("remote:info", async () => {
+    if (!remote?.server?.listening) return null;
+    const info = remote.info();
+    const url = info.urls[0];
+    return { ...info, qr: url ? await QRCode.toDataURL(url, { margin: 1, width: 240 }) : "" };
+  });
+  handle("remote:playback", (state) => remote?.setPlayback(state));
   handle("library:list", () => library.list());
   handle("library:import", (paths) => library.import(paths));
   handle("library:choose", async () => {
@@ -168,6 +194,7 @@ app.whenReady().then(async () => {
 app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
+app.on("will-quit", () => remote?.stop());
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });

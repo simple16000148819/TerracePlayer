@@ -1083,3 +1083,6 @@ dialog > .primary {
 .card-delete .icon { width: 14px; height: 14px; }
 .asset-card:hover .card-delete, .asset-card:focus-visible .card-delete { opacity: 1; }
 .card-delete:hover { background: #d9434b; }
+
+.remote-qr{display:flex;justify-content:center;margin:12px 0}.remote-qr img{background:#fff;border-radius:8px;padding:6px}
+#remote-dialog kbd{white-space:normal;word-break:break-all;text-align:right}

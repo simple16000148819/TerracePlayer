@@ -47,5 +47,8 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true
     }
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4"
   }
 }

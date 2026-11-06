@@ -34,7 +34,7 @@ $("#app").innerHTML = `
   <header class="app-header">
     <div class="brand"><span class="brand-mark">${icon("film")}</span><div><strong>TERRACE<span>PLAYER</span></strong><small>本地放映台</small></div></div>
     <div class="header-center"><span class="status-dot"></span>本地素材 · 随时放映</div>
-    <div class="header-actions"><button class="icon-button" id="help" title="操作说明" aria-label="操作说明">${icon("help")}</button><button class="primary" id="import-top">${icon("plus")}导入素材</button></div>
+    <div class="header-actions"><button class="secondary" id="remote-btn" title="同一 Wi‑Fi 下用手机遥控">📱 手机遥控</button><button class="icon-button" id="help" title="操作说明" aria-label="操作说明">${icon("help")}</button><button class="primary" id="import-top">${icon("plus")}导入素材</button></div>
   </header>
   <div class="workspace">
     <aside class="library">
@@ -82,6 +82,7 @@ $("#app").innerHTML = `
   <div class="drop-overlay" id="drop-overlay" hidden>${icon("upload")}<h2>松开，加入素材库</h2><p>图片和视频都可以一次导入</p></div>
   <div class="toast" id="toast" role="status" hidden></div>
   <dialog id="help-dialog"><div class="dialog-heading"><h2>放映操作</h2><button class="icon-button" id="close-help" aria-label="关闭">${icon("close")}</button></div><p>将图片、视频拖到窗口，或点击「导入素材」。前 9 个素材自动分配数字 1–9，也可以在下方重新设置。</p><div class="help-row"><span>切换素材</span><kbd>专属按键 / ← →</kbd></div><div class="help-row"><span>全屏 / 退出</span><kbd>F 或 F11 / Esc</kbd></div><div class="help-row"><span>播放 / 暂停</span><kbd>Space</kbd></div><div class="help-row"><span>静音</span><kbd>M</kbd></div><p class="help-note">全屏中隐藏所有控件与鼠标。新画面准备好后再切换；视频每次从头播放。仅在本程序获得焦点时响应快捷键。素材库引用原文件，请勿移动或删除。</p><button class="primary" id="help-done">知道了</button></dialog>
+  <dialog id="remote-dialog"><div class="dialog-heading"><h2>手机遥控</h2><button class="icon-button" id="close-remote" aria-label="关闭">${icon("close")}</button></div><div id="remote-body">正在获取…</div><p class="help-note">手机与电脑连接同一 Wi‑Fi，用相机扫码或在浏览器打开上方地址即可查看素材库并切换播放。遥控页的「扫描播放器」可自动发现局域网内其他 Terrace Player。首次启动若 Windows 防火墙弹窗，请允许「专用网络」。</p><button class="primary" id="remote-done">知道了</button></dialog>
   <input type="file" id="browser-files" multiple accept="image/*,video/*" hidden />
 `;
 
@@ -288,6 +289,16 @@ function updateTransport() {
     video?.duration ? (video.currentTime / video.duration) * 100 : 0,
   );
   $("#play").innerHTML = icon(video && !video.paused ? "pause" : "play");
+  reportPlayback();
+}
+let lastPlayback = "";
+function reportPlayback() {
+  const video = player.video;
+  const state = { selectedId, playing: Boolean(video && !video.paused) };
+  const key = JSON.stringify(state);
+  if (key === lastPlayback) return;
+  lastPlayback = key;
+  void api?.reportPlayback(state).catch(() => {});
 }
 
 async function selectAsset(id: string) {
@@ -306,6 +317,7 @@ async function selectAsset(id: string) {
     $("#stage-empty").hidden = true;
     renderLibrary();
     renderSettings();
+    reportPlayback();
     if (controlsVideo) {
       for (const event of [
         "timeupdate",
@@ -762,6 +774,31 @@ document.addEventListener("fullscreenchange", () => {
   if (!api) syncFullscreen(Boolean(document.fullscreenElement));
 });
 api?.onFullscreen(syncFullscreen);
+
+api?.onRemoteCommand((cmd) => {
+  const video = player.video;
+  if (cmd.action === "select" && cmd.id) void selectAsset(cmd.id);
+  else if (cmd.action === "next") step(1);
+  else if (cmd.action === "previous") step(-1);
+  else if (cmd.action === "toggle") void player.toggle().catch(failure);
+  else if (cmd.action === "play") void video?.play().catch(failure);
+  else if (cmd.action === "pause") video?.pause();
+});
+$("#remote-btn").addEventListener("click", async () => {
+  $<HTMLDialogElement>("#remote-dialog").showModal();
+  const info = api ? await api.remoteInfo().catch(() => null) : null;
+  $("#remote-body").innerHTML = !info
+    ? "<p>遥控服务未启动（仅桌面版可用，或端口被占用）。</p>"
+    : !info.urls.length
+      ? "<p>未检测到局域网地址，请先连接 Wi‑Fi。</p>"
+      : `<div class="remote-qr">${info.qr ? `<img src="${info.qr}" alt="扫码打开遥控页" width="200" height="200" />` : ""}</div>
+        <div class="help-row"><span>遥控地址</span><kbd>${info.urls.map((u) => escapeHTML(u)).join("<br>")}</kbd></div>
+        <div class="help-row"><span>PIN</span><kbd>${escapeHTML(info.pin)}</kbd></div>`;
+});
+for (const id of ["close-remote", "remote-done"])
+  $(`#${id}`).addEventListener("click", () =>
+    $<HTMLDialogElement>("#remote-dialog").close(),
+  );
 
 async function init() {
   if (api) {
